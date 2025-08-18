@@ -1,0 +1,21 @@
+[project]
+name = "yx-cc"
+version = "0.1.0"
+description = "Code Review Tool using Claude Code SDK and Ali YunXiao API"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "claude-code-sdk>=0.0.20",
+    "python-dotenv>=1.1.1",
+    "requests>=2.31.0",
+]
+
+[project.scripts]
+yx-cc = "yx_cc.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/yx_cc"]
