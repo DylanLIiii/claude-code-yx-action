@@ -1,299 +1,513 @@
-"""PR review feature using local Git + YunXiao API + Claude Code SDK."""
+"""PR review orchestrator using local Git + YunXiao API + Claude Code SDK."""
 
 import os
-import subprocess
+import time
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 import asyncio
+from loguru import logger
 
-from claude_code_sdk import ClaudeSDKClient, ClaudeCodeOptions
 from ..integrations.ali_yunxiao import AliYunXiaoClient
 from ..integrations.git_handler import GitHandler
+from ..integrations.claude_code_runner import ClaudeCodeRunner
+from .prompt_reader import PromptReader
 
 
 class PRReviewer:
-    """PR review engine using local Git, YunXiao API, and Claude Code SDK."""
-    
-    def __init__(self):
+    """PR review orchestrator that coordinates Git, YunXiao API, and Claude Code SDK."""
+
+    def __init__(self, prompts_dir: Optional[Path] = None):
         """Initialize PR reviewer with necessary clients."""
-        self.yunxiao_client = AliYunXiaoClient()
-        self.git_handler = GitHandler()
-        
-        # Get current branch from environment
+        logger.info("Initializing PR reviewer")
+
         try:
-            self.current_branch = self.yunxiao_client.get_current_branch_from_env()
+            self.yunxiao_client = AliYunXiaoClient()
+            logger.info("Ali YunXiao client initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize Ali YunXiao client: {e}")
+            raise
+
+        try:
+            self.git_handler = GitHandler()
+            logger.info("Git handler initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize Git handler: {e}")
+            raise
+
+        try:
+            self.claude_runner = ClaudeCodeRunner(max_turns=5)
+            logger.info("Claude Code runner initialized successfully with max_turns=5")
+        except Exception as e:
+            logger.error(f"Failed to initialize Claude Code runner: {e}")
+            raise
+
+        # Initialize prompt reader
+        if prompts_dir is None:
+            # Default to config/system_prompts relative to project root
+            project_root = Path(__file__).parent.parent.parent.parent
+            prompts_dir = project_root / "config" / "system_prompts"
+
+        try:
+            self.prompt_reader = PromptReader(prompts_dir)
+            logger.info(f"Prompt reader initialized with directory: {prompts_dir}")
+        except Exception as e:
+            logger.error(f"Failed to initialize prompt reader: {e}")
+            raise
+
+        # Get current branch from environment or Git
+        try:
+            self.current_branch = self.git_handler.get_current_branch_from_env()
+            logger.info(f"Current branch detected from environment: {self.current_branch}")
         except ValueError:
             # Fallback to git if CI environment is not available
-            self.current_branch = self._get_current_branch_from_git()
-    
+            logger.warning("CI environment not available, falling back to Git command")
+            try:
+                self.current_branch = self.git_handler.get_current_branch()
+                logger.info(f"Current branch detected from Git: {self.current_branch}")
+            except Exception as e:
+                logger.error(f"Failed to get current branch: {e}")
+                raise
+
+        # Track phase comments for updates
+        self.phase_comment_ids: Dict[str, str] = {}
+        # Track phase start times for duration calculation
+        self.phase_start_times: Dict[str, float] = {}
+
     async def review_current_pr(self, target_branch: str = 'master') -> Dict[str, Any]:
-        """Review the current branch's PR against target branch."""
-        # Find the PR for current branch
-        pr = self.yunxiao_client.find_pull_request_by_branch(
-            source_branch=self.current_branch,
-            target_branch=target_branch
-        )
+        """Review the current branch's PR against target branch using phased approach."""
+        logger.info(f"Starting PR review for current branch: {self.current_branch} -> {target_branch}")
+
+        try:
+            # Find the PR for current branch
+            logger.debug(f"Searching for PR: {self.current_branch} -> {target_branch}")
+            pr = self.yunxiao_client.find_pull_request_by_branch(
+                source_branch=self.current_branch,
+                target_branch=target_branch
+            )
+
+            if not pr:
+                logger.error(f"No open PR found for branch {self.current_branch} -> {target_branch}")
+                raise ValueError(f"No open PR found for branch {self.current_branch} -> {target_branch}")
+
+            logger.info(f"Found PR #{pr.get('localId')}: {pr.get('title', 'Unknown title')}")
+            return await self._execute_phased_review(pr, target_branch)
+
+        except Exception as e:
+            logger.error(f"Failed to review current PR: {e}")
+            raise
+
+    async def review_specific_pr(self, pr_local_id: int) -> Dict[str, Any]:
+        """Review a specific PR by its local ID using phased approach."""
+        logger.info(f"Starting review for specific PR #{pr_local_id}")
+
+        try:
+            # Get PR details from YunXiao
+            logger.debug(f"Fetching PR details for ID: {pr_local_id}")
+            prs = self.yunxiao_client.get_pull_requests(state='opened')
+            pr = next((p for p in prs if p['localId'] == pr_local_id), None)
+
+            if not pr:
+                logger.error(f"PR with local ID {pr_local_id} not found")
+                raise ValueError(f"PR with local ID {pr_local_id} not found")
+
+            logger.info(f"Found PR #{pr_local_id}: {pr.get('title', 'Unknown title')} ({pr.get('sourceBranch')} -> {pr.get('targetBranch')})")
+            return await self._execute_phased_review(pr, pr.get('targetBranch', 'master'))
+
+        except Exception as e:
+            logger.error(f"Failed to review specific PR #{pr_local_id}: {e}")
+            raise
+
+    async def _execute_phased_review(self, pr: Dict[str, Any], target_branch: str) -> Dict[str, Any]:
+        """Execute the three-phase review process with progress comments."""
+        pr_local_id = pr['localId']
+        source_branch = pr.get('sourceBranch', self.current_branch)
+
+        logger.info(f"Executing phased review for PR #{pr_local_id}: {source_branch} -> {target_branch}")
         
-        if not pr:
-            raise ValueError(f"No open PR found for branch {self.current_branch} -> {target_branch}")
-        
-        # Get local Git diff between branches  
-        diff_content = self._get_branch_diff(target_branch, self.current_branch)
-        
+        # Reset phase comment tracking for this PR
+        self.phase_comment_ids.clear()
+        self.phase_start_times.clear()
+
+        # Get diff content
+        logger.debug(f"Getting diff content between {target_branch} and {source_branch}")
+        diff_content = self._get_branch_diff(target_branch, source_branch)
+
         if not diff_content.strip():
+            logger.warning(f"No changes detected between {target_branch} and {source_branch}")
             return {
                 'status': 'no_changes',
                 'message': 'No changes detected between branches',
-                'pr_id': pr['localId']
+                'pr_id': pr_local_id
             }
-        
-        # Use Claude Code SDK to analyze the diff
-        analysis_result = await self._analyze_diff_with_claude(diff_content, pr)
-        
-        # Post review comments to YunXiao
-        comments_posted = await self._post_review_comments(pr, analysis_result)
-        
-        return {
-            'status': 'completed',
-            'pr_id': pr['localId'],
-            'pr_title': pr['title'],
-            'analysis': analysis_result['summary'],
-            'comments_posted': len(comments_posted),
-            'comments': comments_posted
-        }
-    
-    async def review_specific_pr(self, pr_local_id: int) -> Dict[str, Any]:
-        """Review a specific PR by its local ID."""
-        # Get PR details from YunXiao
-        prs = self.yunxiao_client.get_pull_requests(state='opened')
-        pr = next((p for p in prs if p['localId'] == pr_local_id), None)
-        
-        if not pr:
-            raise ValueError(f"PR with local ID {pr_local_id} not found")
-        
-        # Get changes from YunXiao API
+
+        logger.info(f"Diff content retrieved, size: {len(diff_content)} characters")
+
+        # Get patch set IDs for comments
+        to_patch_set_id = pr.get('toPatchSetId', '')
+        logger.debug(f"Using patch set ID: {to_patch_set_id}")
+
         try:
-            changes = self.yunxiao_client.get_pull_request_changes(
-                pr_local_id, 
-                pr.get('fromPatchSetId', ''), 
-                pr.get('toPatchSetId', '')
-            )
-        except Exception:
-            # Fallback to local Git diff
-            diff_content = self._get_branch_diff(pr['targetBranch'], pr['sourceBranch'])
-        else:
-            diff_content = self._format_changes_to_diff(changes)
-        
-        # Analyze with Claude Code SDK
-        analysis_result = await self._analyze_diff_with_claude(diff_content, pr)
-        
-        # Post comments
-        comments_posted = await self._post_review_comments(pr, analysis_result)
-        
-        return {
-            'status': 'completed',
-            'pr_id': pr['localId'],
-            'pr_title': pr['title'],
-            'analysis': analysis_result['summary'],
-            'comments_posted': len(comments_posted),
-            'comments': comments_posted
+            # Phase 1: Summary Generation
+            logger.info("Starting Phase 1: Summary Generation")
+            await self._post_phase_start_comment(pr_local_id, "Summary Generation", to_patch_set_id)
+            summary_result = await self._phase_1_summary(pr, diff_content)
+            logger.info(f"Phase 1 completed, summary length: {len(summary_result)} characters")
+            await self._post_phase_result_comment(pr_local_id, "Summary Generation", summary_result, to_patch_set_id)
+
+            # Phase 2: Change Analysis
+            logger.info("Starting Phase 2: Change Analysis")
+            await self._post_phase_start_comment(pr_local_id, "Change Analysis", to_patch_set_id)
+            analysis_result = await self._phase_2_analysis(pr, diff_content, summary_result)
+            logger.info(f"Phase 2 completed, analysis length: {len(analysis_result)} characters")
+            await self._post_phase_result_comment(pr_local_id, "Change Analysis", analysis_result, to_patch_set_id)
+
+            # Phase 3: Comment Generation
+            logger.info("Starting Phase 3: Comment Generation")
+            await self._post_phase_start_comment(pr_local_id, "Comment Generation", to_patch_set_id)
+            comments_result = await self._phase_3_comments(pr, diff_content, analysis_result)
+            logger.info(f"Phase 3 completed, generated {len(comments_result)} comments")
+            
+            # Update comment generation phase with summary before posting inline comments
+            await self._post_phase_result_comment(pr_local_id, "Comment Generation", 
+                f"Generated {len(comments_result)} inline comments. Posting them now...", to_patch_set_id)
+            
+            # Post inline comments
+            await self._post_inline_comments(pr, comments_result)
+            
+            # Final update after all inline comments are posted
+            await self._update_comment_generation_final(pr_local_id, len(comments_result))
+
+            # Final summary comment
+            logger.info("Posting final summary comment")
+            await self._post_final_summary(pr, summary_result, analysis_result, comments_result)
+
+            result = {
+                'status': 'completed',
+                'pr_id': pr_local_id,
+                'pr_title': pr['title'],
+                'summary': summary_result,
+                'analysis': analysis_result,
+                'comments_posted': len(comments_result),
+                'comments': comments_result
+            }
+
+            logger.success(f"PR review completed successfully for #{pr_local_id}")
+            return result
+
+        except Exception as e:
+            logger.error(f"Error during phased review execution: {e}")
+            # Post error comment
+            await self._post_error_comment(pr_local_id, str(e), to_patch_set_id)
+            raise
+
+    async def _phase_1_summary(self, pr: Dict[str, Any], diff_content: str) -> str:
+        """Phase 1: Generate PR summary using system prompt."""
+        logger.debug("Phase 1: Reading summary system prompt")
+        system_prompt = self.prompt_reader.read_system_prompt('summary')
+
+        context = {
+            'pr_title': pr.get('title', 'Unknown'),
+            'pr_description': pr.get('description', 'No description'),
+            'source_branch': pr.get('sourceBranch', 'unknown'),
+            'target_branch': pr.get('targetBranch', 'unknown'),
+            'diff_content': diff_content
         }
-    
-    async def _analyze_diff_with_claude(self, diff_content: str, pr: Dict[str, Any]) -> Dict[str, Any]:
-        """Use Claude Code SDK to analyze the diff content."""
-        system_prompt = """You are a senior code reviewer. Analyze the provided Git diff and:
-1. Provide a summary of changes
-2. Identify potential issues, bugs, or security concerns
-3. Suggest improvements for code quality
-4. For each specific issue, provide the file path and line number where possible
 
-Format your response as:
-SUMMARY: Brief overview of changes
+        logger.debug(f"Phase 1: Building prompt for PR: {context['pr_title']}")
+        prompt = f"""Please generate a summary for this Pull Request:
 
-ISSUES:
-- File: path/to/file.py, Line: 42, Issue: Description of issue
-- File: path/to/file.py, Line: 89, Issue: Another issue
-
-SUGGESTIONS:
-- General suggestions for improvement"""
-        
-        prompt = f"""Please review this Pull Request:
-
-PR Title: {pr.get('title', 'Unknown')}
-PR Description: {pr.get('description', 'No description')}
-Source Branch: {pr.get('sourceBranch', 'unknown')}
-Target Branch: {pr.get('targetBranch', 'unknown')}
+PR Title: {context['pr_title']}
+PR Description: {context['pr_description']}
+Source Branch: {context['source_branch']}
+Target Branch: {context['target_branch']}
 
 Git Diff:
 {diff_content}
 
-Please provide a thorough code review."""
-        
-        async with ClaudeSDKClient(
-            options=ClaudeCodeOptions(
-                system_prompt=system_prompt,
-                max_turns=2
-            )
-        ) as client:
-            await client.query(prompt)
+Please provide a comprehensive summary following the system prompt guidelines."""
+
+        logger.debug("Phase 1: Sending request to Claude Code SDK")
+        try:
+            result = await self.claude_runner.run_async(system_prompt, prompt)
+            logger.debug(f"Phase 1: Received response from Claude, length: {len(result)} characters")
+            return result
+        except Exception as e:
+            logger.error(f"Phase 1: Claude Code SDK request failed: {e}")
+            raise
+
+    async def _phase_2_analysis(self, pr: Dict[str, Any], diff_content: str, summary: str) -> str:
+        """Phase 2: Analyze changes using system prompt."""
+        logger.debug("Phase 2: Reading analysis system prompt")
+        system_prompt = self.prompt_reader.read_system_prompt('analysis')
+
+        logger.debug(f"Phase 2: Building analysis prompt for PR: {pr.get('title', 'Unknown')}")
+        prompt = f"""Please analyze this Pull Request based on the previous summary:
+
+Previous Summary:
+{summary}
+
+PR Details:
+- Title: {pr.get('title', 'Unknown')}
+- Description: {pr.get('description', 'No description')}
+- Source Branch: {pr.get('sourceBranch', 'unknown')}
+- Target Branch: {pr.get('targetBranch', 'unknown')}
+
+Git Diff:
+{diff_content}
+
+Please provide a detailed technical analysis following the system prompt guidelines."""
+
+        logger.debug("Phase 2: Sending analysis request to Claude Code SDK")
+        try:
+            result = await self.claude_runner.run_async(system_prompt, prompt)
+            logger.debug(f"Phase 2: Received analysis response from Claude, length: {len(result)} characters")
+            return result
+        except Exception as e:
+            logger.error(f"Phase 2: Claude Code SDK analysis request failed: {e}")
+            raise
+
+    async def _phase_3_comments(self, pr: Dict[str, Any], diff_content: str, analysis: str) -> List[Dict[str, Any]]:
+        """Phase 3: Generate specific comments using system prompt."""
+        logger.debug("Phase 3: Reading comment system prompt")
+        system_prompt = self.prompt_reader.read_system_prompt('comment')
+
+        logger.debug(f"Phase 3: Building comment generation prompt for PR: {pr.get('title', 'Unknown')}")
+        prompt = f"""Please generate specific comments for this Pull Request based on the previous analysis:
+
+Previous Analysis:
+{analysis}
+
+PR Details:
+- Title: {pr.get('title', 'Unknown')}
+- Description: {pr.get('description', 'No description')}
+
+Git Diff:
+{diff_content}
+
+Please provide specific, actionable comments following the system prompt guidelines."""
+
+        logger.debug("Phase 3: Sending comment generation request to Claude Code SDK")
+        try:
+            response = await self.claude_runner.run_async(system_prompt, prompt, max_turns=10)
+            logger.debug(f"Phase 3: Received comment response from Claude, length: {len(response)} characters")
+
+            logger.debug("Phase 3: Parsing comment response")
+            comments = self._parse_comment_response(response)
+            logger.debug(f"Phase 3: Parsed {len(comments)} comments from response")
+            return comments
+        except Exception as e:
+            logger.error(f"Phase 3: Claude Code SDK comment generation failed: {e}")
+            raise
+
+    async def _post_phase_start_comment(self, pr_local_id: int, phase_name: str, patch_set_id: str):
+        """Post a comment indicating the start of a review phase."""
+        logger.debug(f"Posting phase start comment for {phase_name} on PR #{pr_local_id}")
+        try:
+            # Record start time
+            self.phase_start_times[phase_name.lower()] = time.time()
             
-            full_response = []
-            async for message in client.receive_response():
-                if hasattr(message, 'content'):
-                    for block in message.content:
-                        if hasattr(block, 'text'):
-                            full_response.append(block.text)
-        
-        response_text = ''.join(full_response)
-        return self._parse_claude_response(response_text)
-    
-    async def _post_review_comments(self, pr: Dict[str, Any], analysis: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Post review comments to YunXiao."""
-        comments_posted = []
-        pr_local_id = pr['localId']
-        
-        # Get patch set IDs - use the latest version
-        to_patch_set_id = pr.get('toPatchSetId', '')
-        from_patch_set_id = pr.get('fromPatchSetId', '')
-        
-        # Post summary as global comment
-        if analysis['summary']:
-            try:
-                comment = self.yunxiao_client.create_global_comment(
+            result = self.yunxiao_client.create_global_comment(
+                pr_local_id,
+                f"🔄 **Review Phase Started**: {phase_name}\n\n_Processing..._",
+                patch_set_id
+            )
+            # Store comment ID for later update
+            comment_biz_id = result.get('comment_biz_id')
+            if comment_biz_id:
+                self.phase_comment_ids[phase_name.lower()] = comment_biz_id
+                logger.debug(f"Stored comment ID {comment_biz_id} for phase {phase_name}")
+            
+            logger.debug(f"Successfully posted phase start comment for {phase_name}")
+        except Exception as e:
+            logger.error(f"Failed to post phase start comment for {phase_name}: {e}")
+
+    async def _post_phase_result_comment(self, pr_local_id: int, phase_name: str, result: str, patch_set_id: str):
+        """Update the phase comment with the result."""
+        logger.debug(f"Updating phase result comment for {phase_name} on PR #{pr_local_id}")
+        try:
+            phase_key = phase_name.lower()
+            comment_biz_id = self.phase_comment_ids.get(phase_key)
+            
+            # Calculate elapsed time
+            start_time = self.phase_start_times.get(phase_key)
+            elapsed_str = ""
+            if start_time:
+                elapsed = time.time() - start_time
+                elapsed_str = f" _(completed in {elapsed:.1f}s)_"
+            
+            if comment_biz_id:
+                # Update existing comment
+                logger.debug(f"Updating existing comment {comment_biz_id} for phase {phase_name}")
+                self.yunxiao_client.update_pr_comment(
                     pr_local_id,
-                    f"## Code Review Summary\n\n{analysis['summary']}",
-                    to_patch_set_id
+                    comment_biz_id,
+                    content=f"✅ **{phase_name} Complete**{elapsed_str}\n\n{result}"
                 )
-                comments_posted.append({
-                    'type': 'global',
-                    'content': analysis['summary'],
-                    'comment_id': comment.get('comment_biz_id')
-                })
-            except Exception as e:
-                print(f"Failed to post global comment: {e}")
-        
-        # Post specific issue comments
-        for issue in analysis['issues']:
-            if issue['file'] and issue['line']:
+                logger.debug(f"Successfully updated phase result comment for {phase_name}")
+            else:
+                # Fallback to creating new comment if ID not found
+                logger.warning(f"No stored comment ID for phase {phase_name}, creating new comment")
+                self.yunxiao_client.create_global_comment(
+                    pr_local_id,
+                    f"✅ **{phase_name} Complete**{elapsed_str}\n\n{result}",
+                    patch_set_id
+                )
+                logger.debug(f"Successfully created fallback phase result comment for {phase_name}")
+        except Exception as e:
+            logger.error(f"Failed to update/post phase result comment for {phase_name}: {e}")
+
+    async def _post_inline_comments(self, pr: Dict[str, Any], comments: List[Dict[str, Any]]):
+        """Post inline comments to specific lines with progress updates."""
+        pr_local_id = pr['localId']
+        from_patch_set_id = pr.get('fromPatchSetId', '')
+        to_patch_set_id = pr.get('toPatchSetId', '')
+
+        logger.info(f"Posting {len(comments)} inline comments to PR #{pr_local_id}")
+
+        for i, comment in enumerate(comments, 1):
+            # Update progress every 5 comments or on last comment
+            if i % 5 == 0 or i == len(comments):
+                progress_msg = f"Posting inline comments: {i}/{len(comments)} completed"
+                await self._update_phase_progress(pr_local_id, "Comment Generation", progress_msg)
+            
+            if comment.get('file') and comment.get('line'):
+                logger.debug(f"Posting inline comment {i}/{len(comments)}: {comment['file']}:{comment['line']}")
                 try:
-                    comment = self.yunxiao_client.create_inline_comment(
+                    self.yunxiao_client.create_inline_comment(
                         pr_local_id,
-                        issue['content'],
-                        issue['file'],
-                        int(issue['line']),
+                        f"**{comment.get('type', 'COMMENT')}**: {comment['content']}",
+                        comment['file'],
+                        int(comment['line']),
                         from_patch_set_id,
                         to_patch_set_id
                     )
-                    comments_posted.append({
-                        'type': 'inline',
-                        'file': issue['file'],
-                        'line': issue['line'],
-                        'content': issue['content'],
-                        'comment_id': comment.get('comment_biz_id')
-                    })
+                    logger.debug(f"Successfully posted inline comment {i}/{len(comments)}")
                 except Exception as e:
-                    print(f"Failed to post inline comment for {issue['file']}:{issue['line']}: {e}")
-        
-        # Post general suggestions as global comment
-        if analysis['suggestions']:
-            try:
-                suggestions_text = "\n".join([f"- {s}" for s in analysis['suggestions']])
-                comment = self.yunxiao_client.create_global_comment(
-                    pr_local_id,
-                    f"## Suggestions for Improvement\n\n{suggestions_text}",
-                    to_patch_set_id
-                )
-                comments_posted.append({
-                    'type': 'global',
-                    'content': f"Suggestions: {suggestions_text}",
-                    'comment_id': comment.get('comment_biz_id')
-                })
-            except Exception as e:
-                print(f"Failed to post suggestions comment: {e}")
-        
-        return comments_posted
-    
-    def _get_current_branch_from_git(self) -> str:
-        """Get current branch name using Git command."""
+                    logger.error(f"Failed to post inline comment for {comment['file']}:{comment['line']}: {e}")
+            else:
+                logger.warning(f"Skipping comment {i}/{len(comments)} - missing file or line information: {comment}")
+
+    async def _post_final_summary(self, pr: Dict[str, Any], summary: str, analysis: str, comments: List[Dict[str, Any]]):
+        """Post final review summary."""
+        pr_local_id = pr['localId']
+        to_patch_set_id = pr.get('toPatchSetId', '')
+
+        final_summary = f"""🎯 **Code Review Complete**
+
+**Summary**: {len(summary.split())} words
+**Analysis**: {len(analysis.split())} words
+**Comments Generated**: {len(comments)}
+
+The automated review has been completed. Please review all comments and address any issues marked as MUST_FIX or SHOULD_FIX."""
+
+        logger.info(f"Posting final summary for PR #{pr_local_id}")
         try:
-            result = subprocess.run(
-                ['git', 'rev-parse', '--abbrev-ref', 'HEAD'],
-                capture_output=True, text=True, check=True
+            self.yunxiao_client.create_global_comment(
+                pr_local_id,
+                final_summary,
+                to_patch_set_id
             )
-            return result.stdout.strip()
-        except subprocess.CalledProcessError as e:
-            raise ValueError(f"Failed to get current branch: {e}")
-    
+            logger.info(f"Successfully posted final summary for PR #{pr_local_id}")
+        except Exception as e:
+            logger.error(f"Failed to post final summary: {e}")
+
+    async def _post_error_comment(self, pr_local_id: int, error_message: str, patch_set_id: str):
+        """Post an error comment if review fails."""
+        logger.warning(f"Posting error comment for PR #{pr_local_id}: {error_message}")
+        try:
+            self.yunxiao_client.create_global_comment(
+                pr_local_id,
+                f"❌ **Review Error**: {error_message}",
+                patch_set_id
+            )
+            logger.info(f"Successfully posted error comment for PR #{pr_local_id}")
+        except Exception as e:
+            logger.error(f"Failed to post error comment: {e}")
+
     def _get_branch_diff(self, base_branch: str, compare_branch: str) -> str:
-        """Get diff between two branches using Git."""
+        """Get diff between two branches using GitHandler."""
+        logger.debug(f"Getting branch diff: {base_branch}..{compare_branch}")
         try:
-            result = subprocess.run(
-                ['git', 'diff', f'{base_branch}..{compare_branch}'],
-                capture_output=True, text=True, check=True
-            )
-            return result.stdout
-        except subprocess.CalledProcessError as e:
-            raise ValueError(f"Failed to get diff between {base_branch} and {compare_branch}: {e}")
-    
-    def _format_changes_to_diff(self, changes: Dict[str, Any]) -> str:
-        """Format YunXiao changes response to diff-like format."""
-        diff_lines = []
-        
-        for item in changes.get('changedTreeItems', []):
-            file_path = item.get('newPath') or item.get('oldPath')
-            add_lines = item.get('addLines', 0)
-            del_lines = item.get('delLines', 0)
-            
-            diff_lines.append(f"--- a/{file_path}")
-            diff_lines.append(f"+++ b/{file_path}")
-            diff_lines.append(f"@@ +{add_lines},-{del_lines} @@")
-            
-            if item.get('newFile'):
-                diff_lines.append(f"New file: {file_path}")
-            elif item.get('deletedFile'):
-                diff_lines.append(f"Deleted file: {file_path}")
-            elif item.get('renamedFile'):
-                diff_lines.append(f"Renamed: {item.get('oldPath')} -> {file_path}")
-        
-        return "\n".join(diff_lines)
-    
-    def _parse_claude_response(self, response: str) -> Dict[str, Any]:
-        """Parse Claude's response into structured data."""
-        result = {
-            'summary': '',
-            'issues': [],
-            'suggestions': []
-        }
-        
+            diff = self.git_handler.get_branch_diff(base_branch, compare_branch)
+            logger.debug(f"Retrieved diff, size: {len(diff)} characters")
+            return diff
+        except Exception as e:
+            logger.error(f"Failed to get branch diff: {e}")
+            raise
+
+    def _parse_comment_response(self, response: str) -> List[Dict[str, Any]]:
+        """Parse Claude's comment response into structured comment data."""
+        logger.debug(f"Parsing comment response, length: {len(response)} characters")
+        comments = []
         lines = response.split('\n')
-        current_section = None
-        
+        current_comment = {}
+
         for line in lines:
             line = line.strip()
+
+            if line.startswith('File:'):
+                if current_comment:  # Save previous comment
+                    comments.append(current_comment)
+                current_comment = {'file': line.split(':', 1)[1].strip()}
+            elif line.startswith('Line:'):
+                current_comment['line'] = line.split(':', 1)[1].strip()
+            elif line.startswith('Type:'):
+                current_comment['type'] = line.split(':', 1)[1].strip()
+            elif line.startswith('Comment:'):
+                current_comment['content'] = line.split(':', 1)[1].strip()
+
+        # Add the last comment
+        if current_comment:
+            comments.append(current_comment)
+
+        logger.debug(f"Parsed {len(comments)} comments from response")
+        return comments
+
+    async def _update_comment_generation_final(self, pr_local_id: int, comment_count: int):
+        """Final update to comment generation phase after inline comments are posted."""
+        try:
+            phase_key = "comment generation"
+            comment_biz_id = self.phase_comment_ids.get(phase_key)
             
-            if line.startswith('SUMMARY:'):
-                current_section = 'summary'
-                result['summary'] = line[8:].strip()
-            elif line.startswith('ISSUES:'):
-                current_section = 'issues'
-            elif line.startswith('SUGGESTIONS:'):
-                current_section = 'suggestions'
-            elif line.startswith('- ') and current_section:
-                if current_section == 'issues':
-                    # Parse "File: path, Line: num, Issue: description"
-                    issue_parts = line[2:].split(', ')
-                    file_part = next((p for p in issue_parts if p.startswith('File:')), None)
-                    line_part = next((p for p in issue_parts if p.startswith('Line:')), None)
-                    issue_part = next((p for p in issue_parts if p.startswith('Issue:')), None)
-                    
-                    result['issues'].append({
-                        'file': file_part.split(':', 1)[1].strip() if file_part else None,
-                        'line': line_part.split(':', 1)[1].strip() if line_part else None,
-                        'content': issue_part.split(':', 1)[1].strip() if issue_part else line[2:]
-                    })
-                elif current_section == 'suggestions':
-                    result['suggestions'].append(line[2:])
-            elif current_section == 'summary' and line:
-                result['summary'] += ' ' + line
-        
-        return result
+            # Calculate elapsed time  
+            start_time = self.phase_start_times.get(phase_key)
+            elapsed_str = ""
+            if start_time:
+                elapsed = time.time() - start_time
+                elapsed_str = f" _(completed in {elapsed:.1f}s)_"
+            
+            if comment_biz_id:
+                logger.debug(f"Final update to comment generation phase: {comment_count} comments posted")
+                self.yunxiao_client.update_pr_comment(
+                    pr_local_id,
+                    comment_biz_id,
+                    content=f"✅ **Comment Generation Complete**{elapsed_str}\\n\\n" +
+                           f"Successfully posted {comment_count} inline comments. " +
+                           f"Please review all comments and address any issues marked as MUST_FIX or SHOULD_FIX."
+                )
+                logger.debug("Successfully updated final comment generation status")
+        except Exception as e:
+            logger.error(f"Failed to update final comment generation status: {e}")
+
+    async def _update_phase_progress(self, pr_local_id: int, phase_name: str, progress_message: str):
+        """Update phase comment with intermediate progress message."""
+        try:
+            phase_key = phase_name.lower()
+            comment_biz_id = self.phase_comment_ids.get(phase_key)
+            
+            # Calculate elapsed time so far
+            start_time = self.phase_start_times.get(phase_key)
+            elapsed_str = ""
+            if start_time:
+                elapsed = time.time() - start_time
+                elapsed_str = f" _(running {elapsed:.1f}s)_"
+            
+            if comment_biz_id:
+                logger.debug(f"Updating progress for {phase_name}: {progress_message}")
+                self.yunxiao_client.update_pr_comment(
+                    pr_local_id,
+                    comment_biz_id,
+                    content=f"🔄 **{phase_name} In Progress**{elapsed_str}\\n\\n{progress_message}"
+                )
+        except Exception as e:
+            logger.error(f"Failed to update phase progress for {phase_name}: {e}")

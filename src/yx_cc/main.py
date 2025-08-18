@@ -54,28 +54,44 @@ async def run_pr_review(args):
 
 def print_pr_result(result: dict):
     """Print PR review result in a formatted way."""
-    print(f"PR Review Status: {result['status']}")
-    
+    print(f"🔍 PR Review Status: {result['status']}")
+
     if result['status'] == 'no_changes':
-        print(result['message'])
+        print(f"ℹ️  {result['message']}")
         return
-    
-    print(f"PR ID: {result['pr_id']}")
-    print(f"PR Title: {result['pr_title']}")
-    print(f"Comments Posted: {result['comments_posted']}")
-    
+
+    print(f"📋 PR ID: {result['pr_id']}")
+    print(f"📝 PR Title: {result['pr_title']}")
+    print(f"💬 Comments Posted: {result['comments_posted']}")
+
+    # Print summary if available
+    if result.get('summary'):
+        print("\n📊 Summary:")
+        print("-" * 50)
+        summary_preview = result['summary'][:300] + "..." if len(result['summary']) > 300 else result['summary']
+        print(summary_preview)
+
+    # Print analysis if available
     if result.get('analysis'):
-        print(f"\nAnalysis Summary:")
-        print(result['analysis'])
-    
+        print("\n🔬 Analysis:")
+        print("-" * 50)
+        analysis_preview = result['analysis'][:300] + "..." if len(result['analysis']) > 300 else result['analysis']
+        print(analysis_preview)
+
+    # Print comments if available
     if result.get('comments'):
-        print(f"\nComments Posted:")
+        print("\n💭 Specific Comments Generated:")
+        print("-" * 50)
         for i, comment in enumerate(result['comments'], 1):
-            if comment['type'] == 'inline':
-                print(f"{i}. [INLINE] {comment['file']}:{comment['line']}")
-                print(f"   {comment['content'][:100]}...")
+            if comment.get('file') and comment.get('line'):
+                comment_type = comment.get('type', 'COMMENT')
+                print(f"{i}. [{comment_type}] {comment['file']}:{comment['line']}")
+                content_preview = comment['content'][:100] + "..." if len(comment['content']) > 100 else comment['content']
+                print(f"   {content_preview}")
             else:
-                print(f"{i}. [GLOBAL] {comment['content'][:100]}...")
+                print(f"{i}. [GENERAL] {comment.get('content', 'No content')[:100]}...")
+
+    print("\n✅ Review completed! Check the PR comments in YunXiao for full details.")
 
 
 if __name__ == "__main__":
