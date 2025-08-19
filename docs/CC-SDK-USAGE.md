@@ -909,12 +909,12 @@ The `--permission-prompt-tool` MCP tool is passed the tool name and input, and m
             return json.dumps({
                 "behavior": "allow",
                 "updatedInput": input
-            })
+            }, ensure_ascii=False)
         else:
             return json.dumps({
                 "behavior": "deny",
                 "message": f"Permission denied for {tool_name}"
-            })
+            }, ensure_ascii=False)
 
     asyncio.run(use_permission_prompt())
     ```
@@ -1420,7 +1420,7 @@ $ echo '{"type":"user","message":{"role":"user","content":[{"type":"text","text"
     # Usage
     report = await audit_pr(123)
     print(f"\n\nAudit complete. Severity: {report['metadata']['severity']}")
-    print(json.dumps(report, indent=2))
+    print(json.dumps(report, indent=2, ensure_ascii=False))
     ```
   </Tab>
 </Tabs>

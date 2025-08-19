@@ -50,6 +50,50 @@ def split_thinking_and_json(content: str) -> tuple[str, str]:
     return thinking, json_block
 
 
+def safe_json_repair(json_str: str) -> str:
+    """Repair JSON while preserving Chinese characters.
+    
+    This function wraps json_repair but ensures Chinese characters
+    are not escaped as Unicode sequences.
+    
+    Args:
+        json_str: JSON string to repair
+        
+    Returns:
+        Repaired JSON string with proper Chinese character display
+    """
+    try:
+        from json_repair import repair_json
+        repaired = repair_json(json_str)
+        
+        # Parse and re-serialize with ensure_ascii=False to preserve Chinese characters
+        import json
+        parsed = json.loads(repaired)
+        return json.dumps(parsed, ensure_ascii=False, indent=2)
+    except Exception:
+        # If repair fails, just return the original string
+        return json_str
+
+
+def safe_json_dumps(obj: Any, **kwargs) -> str:
+    """JSON dumps with Chinese character support by default.
+    
+    This function ensures Chinese characters are not escaped as Unicode sequences.
+    
+    Args:
+        obj: Object to serialize
+        **kwargs: Additional arguments for json.dumps
+    
+    Returns:
+        JSON string with proper Chinese character display
+    """
+    # Always ensure Chinese characters are not escaped
+    kwargs.setdefault('ensure_ascii', False)
+    # Default to pretty formatting
+    kwargs.setdefault('indent', 2)
+    return json.dumps(obj, **kwargs)
+
+
 class JsonDumper:
     """Simple JSON dump utility for storing results with timestamps."""
 

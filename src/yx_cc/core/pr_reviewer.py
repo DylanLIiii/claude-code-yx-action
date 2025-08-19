@@ -11,9 +11,9 @@ from ..integrations.git_handler import GitHandler
 from ..integrations.claude_code_runner import ClaudeCodeRunner
 from ..integrations.openai_runner import OpenAIRunner
 from .prompt_reader import PromptReader
-from .utils import JsonDumper, split_thinking_and_json
+from .utils import JsonDumper, split_thinking_and_json, safe_json_repair
 from .output_formatter import OutputFormatter
-from json_repair import repair_json
+# from json_repair import repair_json  # Now using safe_json_repair instead
 
 
 class PRReviewer:
@@ -571,7 +571,7 @@ Git Diff:
             result = await self.claude_runner.run_async(system_prompt, prompt)
             # TODO: only needed when we use claude code 
             #thinking, result = split_thinking_and_json(result)
-            result = repair_json(result)
+            result = safe_json_repair(result)
             thinking = ""
             logger.debug(f"Phase 1: Received response from Claude, length: {len(result)} characters")
             logger.debug(f"Phase 1: Thinking content length: {len(thinking or '')} characters")
@@ -611,7 +611,7 @@ Git Diff:
             result = await self.claude_runner.run_async(system_prompt, prompt)
             #thinking, result = split_thinking_and_json(result)
             thinking = ""
-            result = repair_json(result)
+            result = safe_json_repair(result)
             logger.debug(f"Phase 2: Received analysis response from Claude, length: {len(result)} characters")
             logger.debug(f"Phase 2: Thinking content length: {len(thinking or '')} characters")
             return thinking or "", result
@@ -646,7 +646,7 @@ Git Diff:
         result = await self.claude_runner.run_async(system_prompt, prompt, max_turns=10)
         #thinking, json_block = split_thinking_and_json(result)
         thinking = ""
-        json_block = repair_json(result)
+        json_block = safe_json_repair(result)
         logger.debug(f"Phase 3: Received comment response from Claude, length: {len(json_block)} characters")
         logger.debug(f"Phase 3: Thinking content length: {len(thinking or '')} characters")
 

@@ -4,6 +4,7 @@ import sys
 import asyncio
 
 from .core.pr_reviewer import PRReviewer
+from .core.output_formatter import OutputFormatter
 from dotenv import load_dotenv
 
 def main():
@@ -72,22 +73,48 @@ def print_pr_result(result: dict):
 
     print(f"💬 Comments Posted: {result['comments_posted']}")
 
-    # Print summary if available
+    # Initialize output formatter for proper markdown formatting
+    formatter = OutputFormatter(format_type='markdown')
+
+    # Print summary if available (properly formatted)
     if result.get('summary'):
-        print("\n📊 Summary:")
-        print("-" * 50)
-        summary_preview = result['summary'][:300] + "..." if len(result['summary']) > 300 else result['summary']
-        print(summary_preview)
+        print("\n" + "=" * 60)
+        try:
+            formatted_summary = formatter.format_summary_result(result['summary'])
+            print(formatted_summary)
+        except Exception as e:
+            print("📊 Summary (Raw - formatting failed):")
+            print("-" * 50)
+            summary_preview = result['summary'][:500] + "..." if len(result['summary']) > 500 else result['summary']
+            print(summary_preview)
+            print(f"\n_Note: Formatting error: {e}_")
 
-    # Print analysis if available
+    # Print analysis if available (properly formatted)
     if result.get('analysis'):
-        print("\n🔬 Analysis:")
-        print("-" * 50)
-        analysis_preview = result['analysis'][:300] + "..." if len(result['analysis']) > 300 else result['analysis']
-        print(analysis_preview)
+        print("\n" + "=" * 60)
+        try:
+            formatted_analysis = formatter.format_analysis_result(result['analysis'])
+            print(formatted_analysis)
+        except Exception as e:
+            print("🔬 Analysis (Raw - formatting failed):")
+            print("-" * 50)
+            analysis_preview = result['analysis'][:500] + "..." if len(result['analysis']) > 500 else result['analysis']
+            print(analysis_preview)
+            print(f"\n_Note: Formatting error: {e}_")
 
-    # Print comments if available
-    if result.get('comments'):
+    # Print comments if available (properly formatted)
+    if result.get('comments_json'):
+        print("\n" + "=" * 60)
+        try:
+            formatted_comments = formatter.format_comment_result(result['comments_json'])
+            print(formatted_comments)
+        except Exception as e:
+            print("💭 Comments (Raw - formatting failed):")
+            print("-" * 50)
+            print(str(result.get('comments_json', 'No comments data'))[:500])
+            print(f"\n_Note: Formatting error: {e}_")
+    elif result.get('comments'):
+        # Fallback to old format for backward compatibility
         print("\n💭 Specific Comments Generated:")
         print("-" * 50)
         for i, comment in enumerate(result['comments'], 1):
