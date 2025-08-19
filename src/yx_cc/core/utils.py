@@ -26,7 +26,7 @@ def split_thinking_and_json(content: str) -> tuple[str, str]:
     Returns:
         thinking: Text before the first ```json fence (stripped).
         raw_json_string: Raw JSON substring (stripped) if a fence was found,
-                         else None. If the fence is present but empty, returns "".
+                         else None. If the fence is present but empty, returns content originally.
                          If no closing fence, returns the remainder after ```json.
     """
     fence_marker = "```json"
@@ -46,7 +46,7 @@ def split_thinking_and_json(content: str) -> tuple[str, str]:
         json_block = remainder[:end_idx].strip()
 
     if not json_block:
-        return thinking, ""
+        return thinking, content
     return thinking, json_block
 
 

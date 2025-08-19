@@ -110,11 +110,3 @@ class ClaudeCodeRunner:
         return prompt
 
 
-# Backward compatibility - keep the old interface
-class _ClaudeRunner:
-    """Internal helper to run Claude Code SDK calls synchronously."""
-
-    @staticmethod
-    def run(system_prompt: str, prompt: str, max_turns: int = 2) -> str:
-        runner = ClaudeCodeRunner(max_turns=max_turns)
-        return runner.run(system_prompt, prompt)

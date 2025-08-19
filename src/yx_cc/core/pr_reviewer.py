@@ -9,6 +9,7 @@ from loguru import logger
 from ..integrations.ali_yunxiao import AliYunXiaoClient
 from ..integrations.git_handler import GitHandler
 from ..integrations.claude_code_runner import ClaudeCodeRunner
+from ..integrations.openai_runner import OpenAIRunner
 from .prompt_reader import PromptReader
 from .utils import JsonDumper, split_thinking_and_json
 from .output_formatter import OutputFormatter
@@ -39,7 +40,7 @@ class PRReviewer:
             raise
 
         try:
-            self.claude_runner = ClaudeCodeRunner(max_turns=5)
+            self.claude_runner = OpenAIRunner(max_turns=5)
             logger.info("Claude Code runner initialized successfully with max_turns=5")
         except Exception as e:
             logger.error(f"Failed to initialize Claude Code runner: {e}")
@@ -568,9 +569,10 @@ Git Diff:
         logger.debug("Phase 1: Sending request to Claude Code SDK")
         try:
             result = await self.claude_runner.run_async(system_prompt, prompt)
-            thinking, result = split_thinking_and_json(result)
+            # TODO: only needed when we use claude code 
+            #thinking, result = split_thinking_and_json(result)
             result = repair_json(result)
-
+            thinking = ""
             logger.debug(f"Phase 1: Received response from Claude, length: {len(result)} characters")
             logger.debug(f"Phase 1: Thinking content length: {len(thinking or '')} characters")
             return thinking or "", result
@@ -607,7 +609,8 @@ Git Diff:
         logger.debug("Phase 2: Sending analysis request to Claude Code SDK")
         try:
             result = await self.claude_runner.run_async(system_prompt, prompt)
-            thinking, result = split_thinking_and_json(result)
+            #thinking, result = split_thinking_and_json(result)
+            thinking = ""
             result = repair_json(result)
             logger.debug(f"Phase 2: Received analysis response from Claude, length: {len(result)} characters")
             logger.debug(f"Phase 2: Thinking content length: {len(thinking or '')} characters")
@@ -641,8 +644,9 @@ Git Diff:
         logger.debug("Phase 3: Sending comment generation request to Claude Code SDK")
         # try:
         result = await self.claude_runner.run_async(system_prompt, prompt, max_turns=10)
-        thinking, json_block = split_thinking_and_json(result)
-        json_block = repair_json(json_block)
+        #thinking, json_block = split_thinking_and_json(result)
+        thinking = ""
+        json_block = repair_json(result)
         logger.debug(f"Phase 3: Received comment response from Claude, length: {len(json_block)} characters")
         logger.debug(f"Phase 3: Thinking content length: {len(thinking or '')} characters")
 
