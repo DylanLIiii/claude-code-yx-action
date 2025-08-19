@@ -1,12 +1,12 @@
 # YX-CC: AI-Powered Code Review Tool
 
-A sophisticated automated code review tool that combines Claude Code SDK with Ali YunXiao API to provide intelligent, multi-stage code analysis and review capabilities.
+A sophisticated automated code review tool that integrates multiple AI providers (Claude Code SDK and OpenAI API) with Ali YunXiao API to provide intelligent, multi-stage code analysis and review capabilities.
 
 ## 🌟 Features
 
 ### 🔍 Intelligent PR Review
 - **Multi-Stage Analysis**: Three-phase review process (Summary → Analysis → Comments)
-- **AI-Powered Insights**: Uses Claude Code SDK for intelligent code analysis
+- **Multiple AI Providers**: Supports both Claude Code SDK and OpenAI API for flexible AI-powered analysis
 - **Smart Caching**: Automatically reuses existing review results to avoid redundant processing
 - **Flexible Modes**: Selective review phases (summary, analysis, comments) with configurable modes
 
@@ -28,7 +28,9 @@ A sophisticated automated code review tool that combines Claude Code SDK with Al
 ### Prerequisites
 - Python 3.12+
 - Ali YunXiao account with API access
-- Anthropic Claude API access
+- AI Provider access:
+  - **Claude Code SDK**: Anthropic Claude API access, or
+  - **OpenAI API**: OpenAI API key with compatible models
 
 ### Quick Setup
 
@@ -57,8 +59,14 @@ uv run python -m yx_cc --help
 Create a `.env` file in your project root or home directory (`~/.yx-cc.env`):
 
 ```bash
-# Anthropic Claude Code SDK
+# AI Provider Configuration (choose one)
+# Option 1: Claude Code SDK
 ANTHROPIC_API_KEY=your_anthropic_api_key_here
+
+# Option 2: OpenAI API
+OPENAI_API_KEY=your_openai_api_key_here
+OPENAI_MODEL=gpt-4o  # or any compatible model
+OPENAI_BASE_URL=https://api.openai.com/v1  # optional, for custom endpoints
 
 # Ali YunXiao API Configuration
 ALI_YUNXIAO_TOKEN=pt-0fh3****0fbG_35af****0484
@@ -161,6 +169,7 @@ yx-cc/
 │   ├── integrations/
 │   │   ├── ali_yunxiao.py     # YunXiao API client
 │   │   ├── claude_code_runner.py # Claude Code SDK integration
+│   │   ├── openai_runner.py   # OpenAI API integration
 │   │   └── git_handler.py     # Git operations
 │   └── main.py               # CLI entry point
 ├── config/system_prompts/     # Review prompt templates
@@ -196,9 +205,17 @@ uv run pytest --cov=yx_cc
 
 ## 📚 API Documentation
 
-### Claude Code SDK
+### AI Providers
+
+#### Claude Code SDK
 - [Official Documentation](https://docs.anthropic.com/en/docs/claude-code/sdk#python-specific-best-practices)
 - Python SDK for AI-powered code analysis
+- Advanced tool capabilities and context management
+
+#### OpenAI API
+- [Official Documentation](https://platform.openai.com/docs/api-reference)
+- Direct API integration with OpenAI models
+- Supports custom base URLs for compatible endpoints (e.g., Azure OpenAI)
 
 ### Ali YunXiao API
 - [Official Documentation](https://help.aliyun.com/zh/yunxiao/developer-reference/codeup/)
@@ -215,7 +232,9 @@ uv run pytest --cov=yx_cc
 
 **Authentication Issues**
 - Verify all required environment variables are set
-- Check API token validity and permissions
+- For Claude Code SDK: Check ANTHROPIC_API_KEY validity
+- For OpenAI API: Verify OPENAI_API_KEY and OPENAI_MODEL configuration
+- Check Ali YunXiao token validity and permissions
 - Ensure organization and repository IDs are correct
 
 **Git Integration Issues**
@@ -250,7 +269,8 @@ uv run python -m yx_cc --target-branch master
 
 ## 🙏 Acknowledgments
 
-- [Claude Code SDK](https://docs.anthropic.com/en/docs/claude-code/sdk) for AI-powered code analysis
+- [Claude Code SDK](https://docs.anthropic.com/en/docs/claude-code/sdk) for advanced AI-powered code analysis
+- [OpenAI API](https://platform.openai.com/docs/api-reference) for flexible AI model integration
 - [Ali YunXiao](https://help.aliyun.com/zh/yunxiao/) for repository management API
 - [Loguru](https://github.com/Delgan/loguru) for elegant logging
 - [UV](https://github.com/astral-sh/uv) for fast Python package management
