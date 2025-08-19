@@ -204,12 +204,20 @@ class AliYunXiaoClient:
             logger.debug(f"Response status: {response.status_code}")
             response.raise_for_status()
 
-            result = response.json()
-            logger.debug(f"Request successful, response type: {type(result)}")
-            return result
+            try:
+                result = response.json()
+                logger.debug(f"Request successful, response type: {type(result)}")
+                return result
+            except ValueError as json_error:
+                logger.error(f"Failed to parse JSON response from {method} {endpoint}: {json_error}")
+                logger.error(f"Response content: {response.text[:500]}")  # Log first 500 chars
+                raise RuntimeError(f"Invalid JSON response from YunXiao API: {json_error}")
 
         except requests.RequestException as e:
             logger.error(f"YunXiao API request failed for {method} {endpoint}: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                logger.error(f"Response status: {e.response.status_code}")
+                logger.error(f"Response content: {e.response.text[:500]}")  # Log first 500 chars
             raise RuntimeError(f"YunXiao API request failed: {e}")
 
     def create_global_comment(self, local_id: int, content: str, patch_set_biz_id: str, resolved: bool = False, draft: bool = False) -> Dict[str, Any]:

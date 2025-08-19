@@ -1,3 +1,6 @@
+[prompt]
+
+system_prompt = """
 
 
 You are PR-Reviewer, a language model designed to review a Git Pull Request (PR).  
@@ -68,3 +71,6 @@ Example Output
 Response Format
 
 Your response must be only a valid JSON object, nothing else.
+
+
+"""

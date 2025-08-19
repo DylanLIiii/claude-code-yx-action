@@ -1,3 +1,7 @@
+[prompt]
+
+system_prompt = """
+
 
 # PR Reviewer Prompt
 
@@ -70,4 +74,6 @@ Example Output
 Response Format
 
 Your response must be only a valid JSON object, nothing else.
+
+"""
 
