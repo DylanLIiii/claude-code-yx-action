@@ -73,6 +73,63 @@ class AliYunXiaoClient:
         endpoint = f'/oapi/v1/codeup/organizations/{self.organization_id}/repositories/{self.repository_id}/changeRequests/{local_id}/diffs/changeTree'
         return self._make_request('GET', endpoint, params=params)
 
+    def get_specific_pull_request(self, local_id: int) -> Dict[str, Any]:
+        """Get detailed information for a specific pull request."""
+        logger.debug(f"Getting detailed PR information for local ID: {local_id}")
+
+        endpoint = f'/oapi/v1/codeup/organizations/{self.organization_id}/repositories/{self.repository_id}/changeRequests/{local_id}'
+        try:
+            result = self._make_request('GET', endpoint)
+            logger.info(f"Retrieved detailed PR information for #{local_id}")
+            return result
+        except Exception as e:
+            logger.error(f"Failed to get detailed PR information for #{local_id}: {e}")
+            raise
+
+    def get_branch_compare(self, from_ref: str, to_ref: str, source_type: str = 'branch', target_type: str = 'branch', straight: bool = False) -> Dict[str, Any]:
+        """Get comparison between two branches/commits using Yunxiao API."""
+        logger.debug(f"Getting branch comparison: {from_ref} -> {to_ref}")
+
+        params = {
+            'from': from_ref,
+            'to': to_ref,
+            'sourceType': source_type,
+            'targetType': target_type,
+            'straight': str(straight).lower()
+        }
+
+        endpoint = f'/oapi/v1/codeup/organizations/{self.organization_id}/repositories/{self.repository_id}/compares'
+        try:
+            result = self._make_request('GET', endpoint, params=params)
+            logger.info(f"Retrieved branch comparison between {from_ref} and {to_ref}")
+            return result
+        except Exception as e:
+            logger.error(f"Failed to get branch comparison between {from_ref} and {to_ref}: {e}")
+            raise
+
+    def get_diff_content_from_compare(self, from_ref: str, to_ref: str, source_type: str = 'branch', target_type: str = 'branch') -> str:
+        """Get diff content as a unified string from branch comparison."""
+        logger.debug(f"Getting diff content from comparison: {from_ref} -> {to_ref}")
+
+        try:
+            compare_result = self.get_branch_compare(from_ref, to_ref, source_type, target_type)
+
+            # Extract diff content from the diffs array
+            diff_content = ""
+            diffs = compare_result.get('diffs', [])
+
+            for diff_item in diffs:
+                diff_text = diff_item.get('diff', '')
+                if diff_text:
+                    diff_content += diff_text + "\n"
+
+            logger.info(f"Extracted diff content, size: {len(diff_content)} characters")
+            return diff_content
+
+        except Exception as e:
+            logger.error(f"Failed to get diff content from comparison: {e}")
+            raise
+
     def get_branch_info(self, branch_name: str) -> Dict[str, Any]:
         """Get information about a specific branch."""
         encoded_branch = urllib.parse.quote(branch_name, safe='')
@@ -200,7 +257,42 @@ class AliYunXiaoClient:
             logger.error(f"Failed to create inline comment on PR #{local_id} at {file_path}:{line_number}: {e}")
             raise
 
+    def list_merge_request_comments(self, local_id: int, comment_type: Optional[str] = None,
+                                   file_path: Optional[str] = None, resolved: Optional[bool] = None,
+                                   state: Optional[str] = None) -> List[Dict[str, Any]]:
+        """List comments for a merge request using the ListMergeRequestComments API.
 
+        Args:
+            local_id: PR local ID
+            comment_type: Filter by comment type ('GLOBAL_COMMENT', 'INLINE_COMMENT')
+            file_path: Filter by file path
+            resolved: Filter by resolved status
+            state: Filter by comment state ('DRAFT', 'OPENED')
+
+        Returns:
+            List of comments
+        """
+        logger.debug(f"Listing comments for PR #{local_id}")
+
+        data = {}
+        if comment_type:
+            data['comment_type'] = comment_type
+        if file_path:
+            data['file_path'] = file_path
+        if resolved is not None:
+            data['resolved'] = resolved
+        if state:
+            data['state'] = state
+
+        endpoint = f'/oapi/v1/codeup/organizations/{self.organization_id}/repositories/{self.repository_id}/changeRequests/{local_id}/comments/list'
+
+        try:
+            result = self._make_request('POST', endpoint, data=data)
+            logger.info(f"Retrieved {len(result) if isinstance(result, list) else 'unknown'} comments for PR #{local_id}")
+            return result
+        except Exception as e:
+            logger.error(f"Failed to list comments for PR #{local_id}: {e}")
+            raise
 
     def find_pull_request_by_branch(self, source_branch: str, target_branch: str = 'master') -> Optional[Dict[str, Any]]:
         """Find pull request by source and target branch."""

@@ -1,9 +1,7 @@
 """Main CLI entry point for YX-CC PR review tool."""
 
-import os
 import sys
 import asyncio
-from typing import Optional
 
 from .core.pr_reviewer import PRReviewer
 from dotenv import load_dotenv
@@ -29,7 +27,12 @@ def main():
     parser = argparse.ArgumentParser(description='YX-CC PR Review Tool')
     parser.add_argument('--target-branch', default='master', help='Target branch to compare against')
     parser.add_argument('--pr-id', type=int, help='Specific PR local ID to review')
-    
+    parser.add_argument('--modes', nargs='+', choices=['summary', 'analysis', 'comments'],
+                       default=['summary', 'analysis', 'comments'],
+                       help='Review modes to run (default: all phases)')
+    parser.add_argument('--force-regenerate', action='store_true',
+                       help='Force regeneration of phases even if existing results found')
+
     args = parser.parse_args()
     
     try:
@@ -44,12 +47,12 @@ def main():
 
 async def run_pr_review(args):
     """Run PR review asynchronously."""
-    pr_reviewer = PRReviewer()
-    
+    pr_reviewer = PRReviewer(modes=args.modes)
+
     if args.pr_id:
-        return await pr_reviewer.review_specific_pr(args.pr_id)
+        return await pr_reviewer.review_specific_pr(args.pr_id, args.force_regenerate)
     else:
-        return await pr_reviewer.review_current_pr(args.target_branch)
+        return await pr_reviewer.review_current_pr(args.target_branch, args.force_regenerate)
 
 
 def print_pr_result(result: dict):
@@ -62,6 +65,11 @@ def print_pr_result(result: dict):
 
     print(f"📋 PR ID: {result['pr_id']}")
     print(f"📝 PR Title: {result['pr_title']}")
+
+    # Print enabled phases
+    if result.get('enabled_phases'):
+        print(f"🔧 Enabled Phases: {', '.join(result['enabled_phases'])}")
+
     print(f"💬 Comments Posted: {result['comments_posted']}")
 
     # Print summary if available

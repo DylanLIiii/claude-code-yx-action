@@ -28,6 +28,7 @@ You should need to use web fetch tool to fetch the content from following URL.
 - 服务接入点（domain）: openapi-rdc.aliyuncs.com
 - 操作 PR: @docs/yunxiao/PR.md
 - 操作 BRANCH: @docs/yunxiao/BRANCH.md
+- 查看 DIFF: @docs/yunxiao/DIFF.md
 
 # Environment Variables
 
