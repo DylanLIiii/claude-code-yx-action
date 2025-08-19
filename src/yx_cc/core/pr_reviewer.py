@@ -47,9 +47,25 @@ class PRReviewer:
 
         # Initialize prompt reader
         if prompts_dir is None:
-            # Default to config/system_prompts relative to project root
+            # Try to find config files in multiple locations:
+            # 1. Development: config/system_prompts relative to project root
+            # 2. Installed: yx_cc/config/system_prompts relative to package installation
+
+            # First try development path (relative to project root)
             project_root = Path(__file__).parent.parent.parent.parent
-            prompts_dir = project_root / "config" / "system_prompts"
+            dev_prompts_dir = project_root / "config" / "system_prompts"
+
+            # Then try installed path (within package)
+            package_dir = Path(__file__).parent.parent
+            installed_prompts_dir = package_dir / "config" / "system_prompts"
+
+            if dev_prompts_dir.exists():
+                prompts_dir = dev_prompts_dir
+            elif installed_prompts_dir.exists():
+                prompts_dir = installed_prompts_dir
+            else:
+                # Fallback to development path for error reporting
+                prompts_dir = dev_prompts_dir
 
         try:
             self.prompt_reader = PromptReader(prompts_dir)

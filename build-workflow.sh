@@ -28,6 +28,10 @@ python -m pip install uv
 echo "3. Installing yx-cc globally..."
 uv tool install .
 
+uv tool update-shell
+
+source /root/.bashrc
+
 echo "=== Build completed successfully ==="
 echo "You can now use the tool with: yx-cc -h"
 
