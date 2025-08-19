@@ -23,3 +23,9 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/yx_cc"]
+
+
+[[tool.uv.index]]
+name = "python"
+url = "https://mirrors.aliyun.com/pypi/simple/"
+explicit = true
