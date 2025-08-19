@@ -24,6 +24,15 @@ cd "$REPO_DIR"
 echo "2. Installing uv..."
 python -m pip install uv
 
+# Step 2.1: Configure uv use tuna source 
+
+mkdir -p /etc/uv
+tee /etc/uv/uv.toml > /dev/null <<'EOF'
+[[index]]
+url = "https://mirrors.aliyun.com/pypi/simple/"
+default = true
+EOF
+
 # Step 3: Use uv to install the tool globally
 echo "3. Installing yx-cc globally..."
 uv tool install .
