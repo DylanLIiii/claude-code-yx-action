@@ -797,12 +797,11 @@ Git Diff:
 
         final_summary = f"""🎯 **Code Review Complete**
 
-**Summary**: {len(summary.split())} words
-**Analysis**: {len(analysis.split())} words
-**Comments Generated**: {len(comments)}
-**PR Description**: Updated with automated summary
-
-The automated review has been completed. The PR description has been updated with the generated summary. Please review all comments and address any issues marked as MUST_FIX or SHOULD_FIX."""
+- **Summary**: {len(summary.split())} words
+- **Analysis**: {len(analysis.split())} words
+- **Comments Generated**: {len(comments)}
+- **PR Description**: Updated with automated summary
+"""
 
         logger.info(f"Posting final summary for PR #{pr_local_id}")
         try:
