@@ -105,6 +105,45 @@ class PRReviewer:
         # Cache for PR context to avoid repeated API calls
         self._pr_context_cache: Dict[str, Any] = {}
 
+    def _get_last_reviewed_patch_set(self, pr_local_id: int) -> Optional[str]:
+        """Get the last reviewed patch set ID from existing comments.
+
+        Args:
+            pr_local_id: The local ID of the pull request.
+
+        Returns:
+            The patch set ID of the last review, or None if no previous review found.
+        """
+        logger.debug(f"Looking for last reviewed patch set for PR #{pr_local_id}")
+        try:
+            comments = self.yunxiao_client.list_merge_request_comments(pr_local_id)
+
+            last_version = -1
+            last_patch_set_id = None
+
+            for comment in comments:
+                # Check for our tool's comments
+                if "related_patchset" in comment and comment["related_patchset"]:
+                    patch_set = comment["related_patchset"]
+                    version_no = patch_set.get("versionNo")
+                    patch_set_id = patch_set.get("patchSetBizId")
+
+                    if version_no is not None and patch_set_id:
+                        if version_no > last_version:
+                            last_version = version_no
+                            last_patch_set_id = patch_set_id
+
+            if last_patch_set_id:
+                logger.info(f"Found last reviewed patch set for PR #{pr_local_id}: {last_patch_set_id} (version {last_version})")
+            else:
+                logger.info(f"No previously reviewed patch set found for PR #{pr_local_id}")
+
+            return last_patch_set_id
+
+        except Exception as e:
+            logger.warning(f"Could not determine last reviewed patch set for PR #{pr_local_id}: {e}")
+            return None
+
     def get_existing_phase_context(self, pr_local_id: int, phase_name: str) -> Optional[str]:
         """Retrieve existing phase results from PR comments using ListMergeRequestComments API.
 
@@ -309,9 +348,24 @@ class PRReviewer:
         self.phase_comment_ids.clear()
         self.phase_start_times.clear()
 
-        # Get diff content
-        logger.debug(f"Getting diff content between {target_branch} and {source_branch}")
-        diff_content = self._get_diff_content(pr, target_branch, source_branch)
+        # Check for incremental update
+        last_reviewed_patch_set_id = self._get_last_reviewed_patch_set(pr_local_id)
+        current_patch_set_id = pr.get('toPatchSetId')
+
+        is_incremental_update = last_reviewed_patch_set_id and (last_reviewed_patch_set_id != current_patch_set_id)
+
+        if is_incremental_update:
+            logger.info(f"Incremental update detected for PR #{pr_local_id}. Reviewing changes since patch set {last_reviewed_patch_set_id}.")
+            # For incremental updates, get diff between patch sets
+            diff_content = self._get_diff_content(pr, target_branch, source_branch, from_patch_set_id=last_reviewed_patch_set_id)
+            # Disable summary for incremental updates
+            enabled_modes = [mode for mode in self.enabled_modes if mode != 'summary']
+            logger.info(f"Summary phase disabled for incremental update. Effective modes: {enabled_modes}")
+        else:
+            logger.info(f"New PR or no previous review found for PR #{pr_local_id}. Performing full review.")
+            # Get diff content for the whole PR
+            diff_content = self._get_diff_content(pr, target_branch, source_branch)
+            enabled_modes = self.enabled_modes
 
         if not diff_content.strip():
             logger.warning(f"No changes detected between {target_branch} and {source_branch}")
@@ -328,7 +382,7 @@ class PRReviewer:
             'status': 'completed',
             'pr_id': pr_local_id,
             'pr_title': pr['title'],
-            'enabled_phases': self.enabled_modes,
+            'enabled_phases': enabled_modes,
             'summary': '',
             'analysis': '',
             'comments_posted': 0,
@@ -337,20 +391,20 @@ class PRReviewer:
 
         try:
             # Run enabled phases
-            if 'summary' in self.enabled_modes:
+            if 'summary' in enabled_modes:
                 result['summary'] = await self.run_summary_phase(pr, diff_content, force_regenerate)
 
-            if 'analysis' in self.enabled_modes:
+            if 'analysis' in enabled_modes:
                 result['analysis'] = await self.run_analysis_phase(pr, diff_content, result['summary'], force_regenerate)
 
-            if 'comments' in self.enabled_modes:
+            if 'comments' in enabled_modes:
                 comments_raw, comments_parsed = await self.run_comments_phase(pr, diff_content, result['analysis'], force_regenerate)
                 result['comments_posted'] = len(comments_parsed)
                 result['comments'] = comments_parsed
                 result['comments_raw'] = comments_raw
 
-            # Post final summary if any phases were run
-            if self.enabled_modes:
+            # Post final summary if any phases were run and it's not an incremental update
+            if enabled_modes and not is_incremental_update:
                 logger.info("Posting final summary comment")
                 await self._post_final_summary(pr, result['summary'], result['analysis'], result['comments'])
 
@@ -829,12 +883,26 @@ Git Diff:
         except Exception as e:
             logger.error(f"Failed to post error comment: {e}")
 
-    def _get_diff_content(self, pr: Dict[str, Any], target_branch: str, source_branch: str) -> str:
+    def _get_diff_content(self, pr: Dict[str, Any], target_branch: str, source_branch: str, from_patch_set_id: Optional[str] = None) -> str:
         """Get diff content using Yunxiao API first, fallback to git if needed."""
-        logger.debug(f"Getting diff content: {target_branch}..{source_branch}")
+
+        if from_patch_set_id:
+            # Incremental diff using patch sets
+            to_patch_set_id = pr.get('toPatchSetId')
+            logger.debug(f"Getting incremental diff for PR #{pr['localId']} from {from_patch_set_id} to {to_patch_set_id}")
+            try:
+                changes = self.yunxiao_client.get_pull_request_changes(pr['localId'], from_patch_set_id, to_patch_set_id)
+                diff_content = self._convert_change_tree_to_diff(changes)
+                if diff_content:
+                    logger.info(f"Retrieved incremental diff from patch sets, size: {len(diff_content)} characters")
+                    return diff_content
+            except Exception as e:
+                logger.warning(f"Could not get incremental diff: {e}. Falling back to branch diff.")
+
+        # Full diff
+        logger.debug(f"Getting full diff content: {target_branch}..{source_branch}")
 
         try:
-
             logger.debug(f"Using branch comparison API: {target_branch} -> {source_branch}")
             diff_content = self.yunxiao_client.get_diff_content_from_compare(
                 target_branch, source_branch, 'branch', 'branch'
