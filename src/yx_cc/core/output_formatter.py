@@ -159,6 +159,8 @@ class OutputFormatter:
         description = summary_data.get('description', '')
         if description:
             md_output.append("## Description")
+            if isinstance(description, list):
+                description = "\n".join(f"- {item}" for item in description)
             md_output.append(description)
             md_output.append("")
 
@@ -184,6 +186,10 @@ class OutputFormatter:
                 changes_title = file_desc.get('changes_title', 'No title')
                 changes_summary = file_desc.get('changes_summary', 'No summary')
                 label = file_desc.get('label', 'other')
+
+                # If changes_summary is a list, join it into a string
+                if isinstance(changes_summary, list):
+                    changes_summary = "\n".join(f"- {item}" for item in changes_summary)
 
                 # Escape pipe characters in content and format for table
                 filename_escaped = filename.replace('|', '\\|')
