@@ -33,24 +33,12 @@ def main():
                        help='Review modes to run (default: all phases)')
     parser.add_argument('--force-regenerate', action='store_true',
                        help='Force regeneration of phases even if existing results found')
-    parser.add_argument('--update-description', type=str, help='Update the description of a specific PR and exit. Requires --pr-id.')
 
     args = parser.parse_args()
     
     try:
-        pr_reviewer = PRReviewer(modes=args.modes)
-
-        if args.update_description:
-            if not args.pr_id:
-                print("Error: --update-description requires --pr-id.", file=sys.stderr)
-                sys.exit(1)
-
-            result = pr_reviewer.update_pr_description_only(args.pr_id, args.update_description)
-            print(result.get('message', 'Operation completed.'))
-            sys.exit(0)
-
         # PR review using YunXiao + Claude Code SDK
-        result = asyncio.run(run_pr_review(args, pr_reviewer))
+        result = asyncio.run(run_pr_review(args))
         print_pr_result(result)
             
     except Exception as e:
@@ -58,8 +46,10 @@ def main():
         sys.exit(1)
 
 
-async def run_pr_review(args, pr_reviewer):
+async def run_pr_review(args):
     """Run PR review asynchronously."""
+    pr_reviewer = PRReviewer(modes=args.modes)
+
     if args.pr_id:
         return await pr_reviewer.review_specific_pr(args.pr_id, args.force_regenerate)
     else:

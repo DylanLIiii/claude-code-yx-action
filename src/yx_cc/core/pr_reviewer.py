@@ -179,11 +179,13 @@ class PRReviewer:
                 return existing_summary
 
         logger.info("Starting Summary Generation phase")
-        to_patch_set_id = pr.get('toPatchSetId', '')
 
-        await self._post_phase_start_comment(pr_local_id, "Summary Generation", to_patch_set_id)
-        summary_thinking, summary_result = await self._phase_1_summary(pr, diff_content)
-        await self._post_phase_result_comment(pr_local_id, "Summary Generation", summary_result, to_patch_set_id, summary_thinking)
+        # NOTE: Comment posting for summary phase is disabled as per user request.
+        # The following lines were removed:
+        # await self._post_phase_start_comment(...)
+        # await self._post_phase_result_comment(...)
+
+        _, summary_result = await self._phase_1_summary(pr, diff_content)
 
         # Update PR description with the generated summary
         logger.info("Updating PR description with generated summary")
@@ -440,35 +442,6 @@ class PRReviewer:
 
         except Exception as e:
             logger.error(f"Failed to review specific PR #{pr_local_id}: {e}")
-            raise
-
-    def update_pr_description_only(self, pr_local_id: int, description: str) -> Dict[str, Any]:
-        """Update only the description of a PR."""
-        logger.info(f"Updating description for PR #{pr_local_id}")
-        try:
-            # Get the current PR details to preserve the title
-            pr = self.yunxiao_client.get_specific_pull_request(pr_local_id)
-            if not pr:
-                logger.error(f"PR with local ID {pr_local_id} not found.")
-                raise ValueError(f"PR with local ID {pr_local_id} not found.")
-
-            original_title = pr.get('title', '')
-
-            result = self.yunxiao_client.update_pull_request(
-                pr_local_id,
-                title=original_title,
-                description=description
-            )
-
-            if result.get('result'):
-                logger.info(f"Successfully updated PR #{pr_local_id} description.")
-                return {"status": "success", "message": f"Successfully updated description for PR #{pr_local_id}."}
-            else:
-                logger.warning(f"PR description update returned false result: {result}")
-                return {"status": "failed", "message": f"Failed to update description for PR #{pr_local_id}."}
-
-        except Exception as e:
-            logger.error(f"Failed to update PR #{pr_local_id} description: {e}")
             raise
 
     async def _execute_phased_review(self, pr: Dict[str, Any], target_branch: str) -> Dict[str, Any]:
