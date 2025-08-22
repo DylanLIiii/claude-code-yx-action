@@ -179,11 +179,13 @@ class PRReviewer:
                 return existing_summary
 
         logger.info("Starting Summary Generation phase")
-        to_patch_set_id = pr.get('toPatchSetId', '')
 
-        await self._post_phase_start_comment(pr_local_id, "Summary Generation", to_patch_set_id)
-        summary_thinking, summary_result = await self._phase_1_summary(pr, diff_content)
-        await self._post_phase_result_comment(pr_local_id, "Summary Generation", summary_result, to_patch_set_id, summary_thinking)
+        # NOTE: Comment posting for summary phase is disabled as per user request.
+        # The following lines were removed:
+        # await self._post_phase_start_comment(...)
+        # await self._post_phase_result_comment(...)
+
+        _, summary_result = await self._phase_1_summary(pr, diff_content)
 
         # Update PR description with the generated summary
         logger.info("Updating PR description with generated summary")

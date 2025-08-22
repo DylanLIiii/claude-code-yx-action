@@ -159,7 +159,7 @@ class OutputFormatter:
         description = summary_data.get('description', '')
         if description:
             md_output.append("## Description")
-            md_output.append(description)
+            md_output.append(self._format_list_to_markdown(description))
             md_output.append("")
 
         # Changes Diagram
@@ -184,6 +184,9 @@ class OutputFormatter:
                 changes_title = file_desc.get('changes_title', 'No title')
                 changes_summary = file_desc.get('changes_summary', 'No summary')
                 label = file_desc.get('label', 'other')
+
+                # Format changes_summary, which could be a list
+                changes_summary = self._format_list_to_markdown(changes_summary)
 
                 # Escape pipe characters in content and format for table
                 filename_escaped = filename.replace('|', '\\|')
@@ -470,3 +473,9 @@ class OutputFormatter:
 </details>"""
 
         return thinking_section
+
+    def _format_list_to_markdown(self, content: Union[str, List[str]]) -> str:
+        """Format a list into a markdown string, otherwise return the content as a string."""
+        if isinstance(content, list):
+            return "\n".join(f"- {item}" for item in content)
+        return str(content)
