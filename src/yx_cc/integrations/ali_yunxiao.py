@@ -136,6 +136,22 @@ class AliYunXiaoClient:
         endpoint = f'/oapi/v1/codeup/organizations/{self.organization_id}/repositories/{self.repository_id}/branches/{encoded_branch}'
         return self._make_request('GET', endpoint)
 
+    def get_branch_head_commit(self, branch_name: str) -> Optional[str]:
+        """Get the head commit SHA for a given branch."""
+        logger.debug(f"Getting head commit for branch: {branch_name}")
+        try:
+            branch_info = self.get_branch_info(branch_name)
+            commit_sha = branch_info.get('commit', {}).get('id')
+            if commit_sha:
+                logger.info(f"Found head commit for branch {branch_name}: {commit_sha}")
+                return commit_sha
+            else:
+                logger.warning(f"Could not find head commit for branch {branch_name} in branch info: {branch_info}")
+                return None
+        except Exception as e:
+            logger.error(f"Failed to get head commit for branch {branch_name}: {e}")
+            return None
+
     def create_pr_comment(self, local_id: int, comment_data: Dict[str, Any]) -> Dict[str, Any]:
         """Create a comment on a pull request."""
         endpoint = f'/oapi/v1/codeup/organizations/{self.organization_id}/repositories/{self.repository_id}/changeRequests/{local_id}/comments'

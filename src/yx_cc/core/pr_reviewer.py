@@ -105,6 +105,54 @@ class PRReviewer:
         # Cache for PR context to avoid repeated API calls
         self._pr_context_cache: Dict[str, Any] = {}
 
+    def _get_last_reviewed_commit_id(self, pr_local_id: int) -> Optional[str]:
+        """Get the commit ID of the last review from existing comments.
+
+        Args:
+            pr_local_id: The local ID of the pull request.
+
+        Returns:
+            The commit ID of the last review, or None if no previous review found.
+        """
+        logger.debug(f"Looking for last reviewed commit ID for PR #{pr_local_id}")
+        try:
+            comments = self.yunxiao_client.list_merge_request_comments(pr_local_id)
+
+            last_version = -1
+            last_commit_id = None
+
+            for comment in comments:
+                if "related_patchset" in comment and comment["related_patchset"]:
+                    patch_set = comment["related_patchset"]
+                    version_no = patch_set.get("versionNo")
+                    commit_id = patch_set.get("commitId")
+
+                    if version_no is not None and commit_id:
+                        if version_no > last_version:
+                            last_version = version_no
+                            last_commit_id = commit_id
+
+            if last_commit_id:
+                logger.info(f"Found last reviewed commit ID for PR #{pr_local_id}: {last_commit_id} (version {last_version})")
+            else:
+                logger.info(f"No previously reviewed commit found for PR #{pr_local_id}")
+
+            return last_commit_id
+
+        except Exception as e:
+            logger.warning(f"Could not determine last reviewed commit for PR #{pr_local_id}: {e}")
+            return None
+
+    def _get_pr_head_commit(self, pr: Dict[str, Any]) -> Optional[str]:
+        """Get the head commit of the PR's source branch."""
+        source_branch = pr.get('sourceBranch')
+        if not source_branch:
+            logger.error(f"Source branch not found in PR object: {pr}")
+            return None
+
+        logger.debug(f"Getting head commit for source branch: {source_branch}")
+        return self.yunxiao_client.get_branch_head_commit(source_branch)
+
     def get_existing_phase_context(self, pr_local_id: int, phase_name: str) -> Optional[str]:
         """Retrieve existing phase results from PR comments using ListMergeRequestComments API.
 
@@ -309,12 +357,24 @@ class PRReviewer:
         self.phase_comment_ids.clear()
         self.phase_start_times.clear()
 
-        # Get diff content
-        logger.debug(f"Getting diff content between {target_branch} and {source_branch}")
-        diff_content = self._get_diff_content(pr, target_branch, source_branch)
+        # Check for incremental update
+        last_reviewed_commit_id = self._get_last_reviewed_commit_id(pr_local_id)
+        current_head_commit_id = self._get_pr_head_commit(pr)
+
+        is_incremental_update = last_reviewed_commit_id and current_head_commit_id and (last_reviewed_commit_id != current_head_commit_id)
+
+        if is_incremental_update:
+            logger.info(f"Incremental update detected for PR #{pr_local_id}. Reviewing changes from {last_reviewed_commit_id} to {current_head_commit_id}.")
+            diff_content = self._get_diff_content(pr, target_branch, source_branch, from_commit=last_reviewed_commit_id, to_commit=current_head_commit_id)
+            enabled_modes = [mode for mode in self.enabled_modes if mode != 'summary']
+            logger.info(f"Summary phase disabled for incremental update. Effective modes: {enabled_modes}")
+        else:
+            logger.info(f"New PR or no previous review found for PR #{pr_local_id}. Performing full review.")
+            diff_content = self._get_diff_content(pr, target_branch, source_branch)
+            enabled_modes = self.enabled_modes
 
         if not diff_content.strip():
-            logger.warning(f"No changes detected between {target_branch} and {source_branch}")
+            logger.warning(f"No changes detected for PR #{pr_local_id}")
             return {
                 'status': 'no_changes',
                 'message': 'No changes detected between branches',
@@ -328,7 +388,7 @@ class PRReviewer:
             'status': 'completed',
             'pr_id': pr_local_id,
             'pr_title': pr['title'],
-            'enabled_phases': self.enabled_modes,
+            'enabled_phases': enabled_modes,
             'summary': '',
             'analysis': '',
             'comments_posted': 0,
@@ -337,20 +397,20 @@ class PRReviewer:
 
         try:
             # Run enabled phases
-            if 'summary' in self.enabled_modes:
+            if 'summary' in enabled_modes:
                 result['summary'] = await self.run_summary_phase(pr, diff_content, force_regenerate)
 
-            if 'analysis' in self.enabled_modes:
+            if 'analysis' in enabled_modes:
                 result['analysis'] = await self.run_analysis_phase(pr, diff_content, result['summary'], force_regenerate)
 
-            if 'comments' in self.enabled_modes:
+            if 'comments' in enabled_modes:
                 comments_raw, comments_parsed = await self.run_comments_phase(pr, diff_content, result['analysis'], force_regenerate)
                 result['comments_posted'] = len(comments_parsed)
                 result['comments'] = comments_parsed
                 result['comments_raw'] = comments_raw
 
-            # Post final summary if any phases were run
-            if self.enabled_modes:
+            # Post final summary if any phases were run and it's not an incremental update
+            if enabled_modes and not is_incremental_update:
                 logger.info("Posting final summary comment")
                 await self._post_final_summary(pr, result['summary'], result['analysis'], result['comments'])
 
@@ -829,12 +889,26 @@ Git Diff:
         except Exception as e:
             logger.error(f"Failed to post error comment: {e}")
 
-    def _get_diff_content(self, pr: Dict[str, Any], target_branch: str, source_branch: str) -> str:
+    def _get_diff_content(self, pr: Dict[str, Any], target_branch: str, source_branch: str, from_commit: Optional[str] = None, to_commit: Optional[str] = None) -> str:
         """Get diff content using Yunxiao API first, fallback to git if needed."""
-        logger.debug(f"Getting diff content: {target_branch}..{source_branch}")
+
+        if from_commit and to_commit:
+            # Incremental diff using commit SHAs
+            logger.debug(f"Getting incremental diff for PR #{pr['localId']} from {from_commit} to {to_commit}")
+            try:
+                diff_content = self.yunxiao_client.get_diff_content_from_compare(
+                    from_commit, to_commit, 'commit', 'commit'
+                )
+                if diff_content:
+                    logger.info(f"Retrieved incremental diff from commits, size: {len(diff_content)} characters")
+                    return diff_content
+            except Exception as e:
+                logger.warning(f"Could not get incremental diff from commits: {e}. Falling back to branch diff.")
+
+        # Full diff
+        logger.debug(f"Getting full diff content: {target_branch}..{source_branch}")
 
         try:
-
             logger.debug(f"Using branch comparison API: {target_branch} -> {source_branch}")
             diff_content = self.yunxiao_client.get_diff_content_from_compare(
                 target_branch, source_branch, 'branch', 'branch'
